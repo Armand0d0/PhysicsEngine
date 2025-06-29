@@ -324,7 +324,7 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
     gs->mousePos = glm::vec2((float)mx * mp->mouseSensivity.x, (float)my * mp->mouseSensivity.x);
 
     if (gs->debugMode &&  glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-        gs->dynamicPos[0] = vec3(gs->mousePos.x/1000,gs->mousePos.y/1000, 0);
+        gs->dynamicPos[0] = vec3(0.5+ mx/1920,1. + my/1080, 0.5);
     }
 
 
@@ -446,7 +446,7 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
         }
         ImGui::TreePop();
 
-        ImGui::SliderFloat("alpha", &(gs->alpha), 0, 4);
+        ImGui::SliderFloat("alpha", &(gs->alpha), 0, 0.5);
 
         if (ImGui::Button("Reset cube")) {
         gs->dynamicPos[0] = vec3(0.5f,  1.5f, 0.5f);             // top right 
@@ -463,6 +463,10 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
         gs->dynamicPos[9] = vec3(10, 0, -10);  
         gs->dynamicPos[10] = vec3(-10, 0, 10);  
         gs->dynamicPos[11] = vec3(-10, 0, -10);
+
+        for(int i =0;i<8;i++){
+            gs->speeds[i] = ZERO;
+        }
         }
         
     }
@@ -536,7 +540,7 @@ void update(gameState* gs, windowParams* wp, camera* cam) {
         }
     }
     for(int i=0;i<gs->pointMassCount;i++){
-        if(gs->dynamicPos[i].y <= 0 || distance(gs->dynamicPos[i],0) >= 10000 ){
+        if((gs->dynamicPos[i].y <= 0 && gs->dynamicPos[i].y <= xprev[i].y) || distance(gs->dynamicPos[i],ZERO) >= 10000 ){
             gs->dynamicPos[i] = xprev[i];
         }
         gs->speeds[i] = (gs->dynamicPos[i] - xprev[i]) * (1/dt);
