@@ -12,12 +12,20 @@ uniform float time;
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projMatrix;
+uniform vec3 dynamicPos[12];
 void main()
 {
     
     vs_out.TexCoord = aTexCoord;
-    vs_out.vertexIndex = gl_VertexID;
-    vec4 pos3d = modelMatrix*vec4(pos.x, pos.y, pos.z, 1.0);
+    int id = gl_VertexID;
+    vs_out.vertexIndex = id;
+
+    vec3 pos2 = pos;
+    pos2 = dynamicPos[id];
+
+    
+
+    vec4 pos3d = modelMatrix*vec4(pos2.x, pos2.y, pos2.z, 1.0);
     vs_out.pos3d = pos3d;
     gl_Position = projMatrix*viewMatrix*pos3d;
 }

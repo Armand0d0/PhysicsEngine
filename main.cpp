@@ -19,7 +19,9 @@
 #include "imgui_impl_opengl3.h"
 
 #include "gameItem.h"
+#include "pointMass.h"
 
+#define ZERO glm::vec3(0.f,.0f,.0f)
 #define X glm::vec3(1.f,.0f,.0f)
 #define Y glm::vec3(0.f,1.f,.0f)
 #define Z glm::vec3(0.f,.0f,1.0f)
@@ -30,7 +32,7 @@
 #define TARGET_UPS 60.
 #define SECOND_PER_UPDATE 1./TARGET_UPS
 
-using namespace std;
+using namespace glm;
 
 void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -147,12 +149,19 @@ struct gameState {
     int gameItemCount;
     unsigned int numberTexture;
     unsigned int shaderProgram;
+    float alpha;
+    int pointMassCount;
+    glm::vec3* dynamicPos;
+    vec3* speeds;
+    float* lambda;
+    ivec2* DCs;
+    int DCcount;
     float fov;
     glm::vec4 clearColor;
     float getIngameTime() {
         return (float)this->tick * SECOND_PER_UPDATE;
     }
-    gameState(gameItem* gameItems, int gameItemCount, unsigned int shaderProgram) :
+    gameState(gameItem* gameItems, int gameItemCount, glm::vec3* dynamicPos,vec3* speeds, int pointMassCount,ivec2 *DCs,int DCcount, float* lambda,unsigned int shaderProgram) :
         mousePos(glm::vec2(0.f)),
         lastMousePos(glm::vec2(0.)),
         forward(0.f),
@@ -177,8 +186,15 @@ struct gameState {
         nextStep(false),
         gameItems(gameItems),
         gameItemCount(gameItemCount),
+        pointMassCount(pointMassCount),
         shaderProgram(shaderProgram),
         fov(60.),
+        dynamicPos(dynamicPos),
+        speeds(speeds),
+        lambda(lambda),
+        DCs(DCs),
+        DCcount(DCcount),
+        alpha(0.12f),
         clearColor(glm::vec4(135. / 255., 209. / 255., 235 / 255., 1.)) {
         this->numberTexture = gameItem::loadTexture("numbers.png");
         glUseProgram(this->shaderProgram);
@@ -307,6 +323,15 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
     glfwGetCursorPos(window, &mx, &my);
     gs->mousePos = glm::vec2((float)mx * mp->mouseSensivity.x, (float)my * mp->mouseSensivity.x);
 
+    if (gs->debugMode &&  glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
+        gs->dynamicPos[0] = vec3(gs->mousePos.x/1000,gs->mousePos.y/1000, 0);
+    }
+
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
+        gs->forward = 1;
+    }
+
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
         gs->forward = 1;
     }
@@ -421,11 +446,50 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
         }
         ImGui::TreePop();
 
+        ImGui::SliderFloat("alpha", &(gs->alpha), 0, 4);
+
+        if (ImGui::Button("Reset cube")) {
+        gs->dynamicPos[0] = vec3(0.5f,  1.5f, 0.5f);             // top right 
+        gs->dynamicPos[1] = vec3( 0.5f, 0.5f, 0.5f);            // bottom right
+        gs->dynamicPos[2] = vec3(-0.5f, 0.5f, 0.5f);             // bottom left
+        gs->dynamicPos[3] = vec3(-0.5f,  1.5f, 0.5f);            // top left 
+        //Back
+        gs->dynamicPos[4] = vec3( 0.5f,  1.5f, -0.5f);            // top right
+        gs->dynamicPos[5] = vec3( 0.5f, 0.5f, -0.5f);           // bottom right
+        gs->dynamicPos[6] = vec3(-0.5f, 0.5f, -0.5f);           // bottom left
+        gs->dynamicPos[7] = vec3(-0.5f,  1.5f, -0.5f);            // top left 
+
+        gs->dynamicPos[8] = vec3(10, 0, 10);   
+        gs->dynamicPos[9] = vec3(10, 0, -10);  
+        gs->dynamicPos[10] = vec3(-10, 0, 10);  
+        gs->dynamicPos[11] = vec3(-10, 0, -10);
+        }
+        
     }
+   
 
 
 
 
+}
+
+float distConstraint(gameState* gs, int id1, int id2){
+    vec3 x1 = gs->dynamicPos[id1];
+    vec3 x2 = gs->dynamicPos[id2];
+    return distance(x1,x2) - 1;
+}
+vec3 distConstraintGrad(gameState* gs, int id, int var){
+    int i1 = gs->DCs[id].x;
+    int i2 = gs->DCs[id].y;
+    vec3 x1 = gs->dynamicPos[i1];
+    vec3 x2 = gs->dynamicPos[i2];
+    if(i1 == var){
+        return  (1/distance(x1,x2)) * (x1 - x2);
+    }
+    if(i2 == var){
+        return  -(1/distance(x1,x2)) * (x1 - x2);
+    }
+    return ZERO;
 
 }
 
@@ -435,6 +499,53 @@ void update(gameState* gs, windowParams* wp, camera* cam) {
     float camSpeed = cam->speed * (1.f + gs->running * (cam->runningSpeedFactor - 1.f));
     cam->position += normalize(cam->relativeZAxis * gs->forward + cam->relativeXAxis * gs->sideways + Y * gs->upwards) * camSpeed;
 
+    //XPBD
+    float dt = SECOND_PER_UPDATE;
+    float alphaTilde = gs->alpha/(dt*dt);
+    float* lambda = (float*)malloc(sizeof(float)*gs->DCcount);
+    for(int j=0;j<gs->DCcount;j++){
+        lambda[j] = 0;
+    }
+    float* dLambda = (float*)malloc(sizeof(float)*gs->DCcount);
+    vec3* dx = (vec3*)malloc(sizeof(vec3)*gs->DCcount);
+    vec3* xprev = (vec3*)malloc(sizeof(vec3)*gs->pointMassCount);
+
+    //predict
+    for(int i=0;i<gs->pointMassCount;i++){
+        xprev[i] =  gs->dynamicPos[i];
+        vec3 xpred = gs->dynamicPos[i] +  dt*gs->speeds[i] + dt*dt*vec3(0.,-1,0);
+           gs->dynamicPos[i] = xpred;
+        
+    }
+    //solver
+    int solverIter = 10;
+    for(int k=0;k<solverIter;k++){
+
+        for(int j=0;j<gs->DCcount;j++){
+            dLambda[j] = (-distConstraint(gs,gs->DCs[j].x,gs->DCs[j].y)- alphaTilde*lambda[j]) /
+            (2*pow(distance(distConstraintGrad(gs,j,gs->DCs[j].x),ZERO),2.) + alphaTilde);
+            lambda[j] += dLambda[j];
+        }
+        for(int i=0;i<gs->pointMassCount;i++){
+            dx[i] = ZERO;
+            for(int j=0;j<gs->DCcount;j++){
+                dx[i]+= dLambda[j]*distConstraintGrad(gs,j, i);
+            }
+            gs->dynamicPos[i] += dx[i];
+            
+        }
+    }
+    for(int i=0;i<gs->pointMassCount;i++){
+        if(gs->dynamicPos[i].y <= 0 || distance(gs->dynamicPos[i],0) >= 10000 ){
+            gs->dynamicPos[i] = xprev[i];
+        }
+        gs->speeds[i] = (gs->dynamicPos[i] - xprev[i]) * (1/dt);
+    }
+    
+    free(lambda);
+    free(xprev);
+    free(dLambda);
+    free(dx);
 }
 
 
@@ -465,6 +576,7 @@ void render(GLFWwindow* window, windowParams* wp, camera* cam, gameState* gs) {
     glUniform1i(glGetUniformLocation(gs->shaderProgram, "showVertices"), gs->showVertices);
     glUniform3fv(glGetUniformLocation(gs->shaderProgram, "camPos"), 1, glm::value_ptr(cam->position));
     glUniform1f(glGetUniformLocation(gs->shaderProgram, "time"), gs->getIngameTime());
+    glUniform3fv(glGetUniformLocation(gs->shaderProgram,"dynamicPos"),gs->pointMassCount, glm::value_ptr(gs->dynamicPos[0]));
 
     //Draw
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -507,7 +619,7 @@ void render(GLFWwindow* window, windowParams* wp, camera* cam, gameState* gs) {
 int main() {
     GLFWwindow* window;
     int width = 1850, height = 1080;
-    window = initWindow(window, width, height, "OpenGL-Base-Project");
+    window = initWindow(window, width, height, "Physics Engine");
 
     gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
     initIMGUI(window);
@@ -524,6 +636,11 @@ int main() {
          0.5f, -0.5f, -0.5f,     1.,1.,       // bottom right
         -0.5f, -0.5f, -0.5f,     0.,1.,       // bottom left
         -0.5f,  0.5f, -0.5f,      0.,0.,       // top left */
+        //floor
+        10, 0, 10,    1, 1,
+        10, 0, -10,   1, 0,
+        -10, 0, 10,   0, 1,
+        -10, 0, -10,  0, 0
     };
     unsigned int indices[] = {  // cube faces
         0, 3, 1,    //front
@@ -538,6 +655,9 @@ int main() {
         7, 6, 3,
         0, 7, 3,    //top
         0, 4, 7,//*/
+        //floor
+        8, 9, 10,
+        9, 11, 10,
 
     };
     float vertices2[] = {
@@ -550,7 +670,49 @@ int main() {
         0, 1, 2,
         1, 3, 2,
     };
-    //-----------------------------------------------------------------------------------------
+    //----------------------------------------------------------------------------------------- mass points    
+
+   /* glm::vec3 dynamicPos[] = {
+        //positions            
+        glm::vec3(0.5f,  1.5f, 0.5f),             // top right 
+        glm::vec3( 0.5f, 0.5f, 0.5f),            // bottom right
+        glm::vec3(-0.5f, 0.5f, 0.5f),             // bottom left
+        glm::vec3(-0.5f,  1.5f, 0.5f),            // top left 
+        //Back
+        glm::vec3( 0.5f,  1.5f, -0.5f),            // top right
+        glm::vec3( 0.5f, 0.5f, -0.5f),           // bottom right
+        glm::vec3(-0.5f, 0.5f, -0.5f),           // bottom left
+        glm::vec3(-0.5f,  1.5f, -0.5f),            // top left 
+
+        glm::vec3(10, 0, 10),   
+        glm::vec3(10, 0, -10),  
+        glm::vec3(-10, 0, 10),  
+        glm::vec3(-10, 0, -10),
+    };*/
+    
+    int pointMassCount = 12;
+    
+    vec3 *dynamicPos = (vec3*)malloc(sizeof(vec3)*pointMassCount);
+        //positions            
+        dynamicPos[0] = vec3(0.5f,  1.5f, 0.5f);             // top right 
+        dynamicPos[1] = vec3( 0.5f, 0.5f, 0.5f);            // bottom right
+        dynamicPos[2] = vec3(-0.5f, 0.5f, 0.5f);             // bottom left
+        dynamicPos[3] = vec3(-0.5f,  1.5f, 0.5f);            // top left 
+        //Back
+        dynamicPos[4] = vec3( 0.5f,  1.5f, -0.5f);            // top right
+        dynamicPos[5] = vec3( 0.5f, 0.5f, -0.5f);           // bottom right
+        dynamicPos[6] = vec3(-0.5f, 0.5f, -0.5f);           // bottom left
+        dynamicPos[7] = vec3(-0.5f,  1.5f, -0.5f);            // top left 
+
+        dynamicPos[8] = vec3(10, 0, 10);   
+        dynamicPos[9] = vec3(10, 0, -10);  
+        dynamicPos[10] = vec3(-10, 0, 10);  
+        dynamicPos[11] = vec3(-10, 0, -10);
+
+    vec3 *speeds = (vec3*)malloc(sizeof(vec3)*pointMassCount);
+    for(int i=0;i<pointMassCount;i++){
+      speeds[i] = ZERO;
+    }
 
     unsigned int shaderProgram = buildShaderProgram("./vertexShader.glsl", "./fragmentShader.glsl", "./geometryShader.glsl");
 
@@ -559,14 +721,19 @@ int main() {
     glCullFace(GL_BACK);
 
     gameItem cube("Cube", vertices, sizeof(vertices) / sizeof(float), indices, sizeof(indices) / sizeof(int), "Carre.png");
-    gameItem floor("Floor", vertices2, sizeof(vertices2) / sizeof(float), indices2, sizeof(indices2) / sizeof(int), "damier.png");
-    int gameItemCount = 2;
-    gameItem gameItems[] = { cube , floor };
+    //gameItem floor("Floor", vertices2, sizeof(vertices2) / sizeof(float), indices2, sizeof(indices2) / sizeof(int), "damier.png");
+    int gameItemCount = 1;
+    gameItem gameItems[] = {cube };
+    float lambda[12] = {0,0,0,0,0,0,0,0,0,0,0,0};
+    ivec2 DCs[] = {ivec2(0,1), ivec2(1,2), ivec2(2,3), ivec2(3,0), ivec2(4,5), ivec2(5,6), ivec2(6,7), ivec2(7,4), ivec2(0,4), ivec2(1,5), ivec2(2,6), ivec2(3,7) };
+    int DCcount = 12;
 
-    gameState gs = gameState(gameItems, gameItemCount, shaderProgram);
+    gameState gs = gameState(gameItems, gameItemCount, dynamicPos, speeds, pointMassCount,  DCs, DCcount,lambda,  shaderProgram);
     mouseParams mp = mouseParams();
     windowParams wp = windowParams();
     camera cam = camera();
+
+
 
 
     double previous = glfwGetTime();
@@ -608,7 +775,8 @@ int main() {
         glDeleteBuffers(1, &(gs.gameItems[i].VBO));
         glDeleteVertexArrays(1, &(gs.gameItems[i].VAO));
     }
-
+    free(dynamicPos);
+    free(speeds);
     glDeleteProgram(shaderProgram);
     glfwTerminate();
     return 0;
