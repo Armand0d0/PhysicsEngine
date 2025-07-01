@@ -1,6 +1,7 @@
 #pragma once
 
 #include <iostream>
+#include <vector>
 
 #include <cmath>
 #include <glm/glm.hpp>
@@ -20,6 +21,12 @@
 
 using namespace std;
 
+struct Mesh{
+    int vertexCount;
+    glm::vec3* initialMesh;
+    int indexOffset;
+}typedef Mesh;
+
 class gameItem {
 public:
     const char* name;
@@ -36,7 +43,10 @@ public:
     unsigned int VBO;
     unsigned int EBO;
     glm::vec4 edgesColor;
-    void loadMeshFromObjFile(char* filename);
+    static void loadMeshFromObjFile(    const std::string& filename, 
+        glm::vec3 vertices[],float pointCoords[], int vertexCount,  
+        unsigned int indices[], int indiceCount, std::vector<glm::ivec2>& edges);
+    static void countOBJ(const std::string& filename, int& vertexCount, int& indiceCount);
     void loadMesh(float* vertices, unsigned int vertexCount, unsigned int* indices, unsigned int indexCount);
     static unsigned int loadTexture(const char* fileName);
     gameItem(const char* name, float* vertices, unsigned int vertexCount, unsigned int* indices, unsigned int indexCount, const char* textureFileName);

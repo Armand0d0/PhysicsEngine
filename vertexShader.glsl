@@ -1,6 +1,7 @@
 #version 330 core
 layout (location = 0) in vec3 pos;
 layout (location = 1) in vec2 aTexCoord;
+//vec2 aTexCoord = vec2(0.,0.);
 
 out VS_OUT {
     vec2 TexCoord;
@@ -8,11 +9,12 @@ out VS_OUT {
     vec4 pos3d;
 } vs_out;
 
+#define MAX_VERTEX  1000
 uniform float time;
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projMatrix;
-uniform vec3 dynamicPos[12];
+uniform vec3 dynamicPos[MAX_VERTEX];
 void main()
 {
     

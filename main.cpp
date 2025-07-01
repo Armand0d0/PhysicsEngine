@@ -3,6 +3,8 @@
 #include <string>
 #include <sstream>
 #include <fstream>
+#include <vector>
+#include <algorithm>
 
 #include "glad/glad.h"
 #include <GLFW/glfw3.h>
@@ -33,6 +35,13 @@
 #define SECOND_PER_UPDATE 1./TARGET_UPS
 
 using namespace glm;
+
+void print(vector <ivec2> v) {
+  for (int i = 0; i < v.size(); i++) {
+    cout << v[i].x << " "<< v[i].y<<std::endl;
+  }
+  return;
+}
 
 void error_callback(int error, const char* description) {
     fprintf(stderr, "Error: %s\n", description);
@@ -131,6 +140,7 @@ struct gameState {
     float upwards;
     float running;
     bool key_ESCAPE;
+    bool rightClick;
     //hud parameters
     bool showFaces;
     bool showEdges;
@@ -152,16 +162,18 @@ struct gameState {
     float alpha;
     int pointMassCount;
     glm::vec3* dynamicPos;
+    glm::vec3* initialMesh;
     vec3* speeds;
-    float* lambda;
+    float* DClengths;
     ivec2* DCs;
     int DCcount;
+    int solverIter;
     float fov;
     glm::vec4 clearColor;
     float getIngameTime() {
         return (float)this->tick * SECOND_PER_UPDATE;
     }
-    gameState(gameItem* gameItems, int gameItemCount, glm::vec3* dynamicPos,vec3* speeds, int pointMassCount,ivec2 *DCs,int DCcount, float* lambda,unsigned int shaderProgram) :
+    gameState(gameItem* gameItems, int gameItemCount, glm::vec3* dynamicPos,vec3* initialMesh,vec3* speeds, int pointMassCount,ivec2 *DCs,int DCcount, float* DClengths,unsigned int shaderProgram) :
         mousePos(glm::vec2(0.f)),
         lastMousePos(glm::vec2(0.)),
         forward(0.f),
@@ -190,11 +202,13 @@ struct gameState {
         shaderProgram(shaderProgram),
         fov(60.),
         dynamicPos(dynamicPos),
+        initialMesh(initialMesh),
         speeds(speeds),
-        lambda(lambda),
+        DClengths(DClengths),
         DCs(DCs),
         DCcount(DCcount),
-        alpha(0.12f),
+        solverIter(10),
+        alpha(0.0f),
         clearColor(glm::vec4(135. / 255., 209. / 255., 235 / 255., 1.)) {
         this->numberTexture = gameItem::loadTexture("numbers.png");
         glUseProgram(this->shaderProgram);
@@ -324,7 +338,9 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
     gs->mousePos = glm::vec2((float)mx * mp->mouseSensivity.x, (float)my * mp->mouseSensivity.x);
 
     if (gs->debugMode &&  glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS) {
-        gs->dynamicPos[0] = vec3(0.5+ mx/1920,1. + my/1080, 0.5);
+        gs->rightClick = true;
+    }else{
+        gs->rightClick = false;
     }
 
 
@@ -443,13 +459,28 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
 
                 ImGui::TreePop();
             }
+            
         }
+        for(int i=0;i<gs->pointMassCount;i++){
+            ImGui::Text("%f %f %f \n",gs->dynamicPos[i].x,gs->dynamicPos[i].y,gs->dynamicPos[i].z);
+
+        }
+
         ImGui::TreePop();
 
-        ImGui::SliderFloat("alpha", &(gs->alpha), 0, 0.5);
+        //ImGui::SliderFloat("alpha 0", &(gs->alpha), 0, 0.5);
+        //ImGui::SliderFloat("alpha 1", &(gs->alpha), 0.001, 0.01);
+        ImGui::SliderFloat("alpha 2", &(gs->alpha), 0.0, 0.001, "%.6f");
+       // ImGui::SliderFloat("alpha 3", &(gs->alpha), 0, 0.0001);
 
-        if (ImGui::Button("Reset cube")) {
-        gs->dynamicPos[0] = vec3(0.5f,  1.5f, 0.5f);             // top right 
+
+
+        if (ImGui::Button("Reset mesh")) {
+
+        for(int i=0;i<gs->pointMassCount;i++){
+            gs->dynamicPos[i] = gs->initialMesh[i];
+        }
+        /*vec3(0.5f,  1.5f, 0.5f);             // top right 
         gs->dynamicPos[1] = vec3( 0.5f, 0.5f, 0.5f);            // bottom right
         gs->dynamicPos[2] = vec3(-0.5f, 0.5f, 0.5f);             // bottom left
         gs->dynamicPos[3] = vec3(-0.5f,  1.5f, 0.5f);            // top left 
@@ -462,14 +493,14 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
         gs->dynamicPos[8] = vec3(10, 0, 10);   
         gs->dynamicPos[9] = vec3(10, 0, -10);  
         gs->dynamicPos[10] = vec3(-10, 0, 10);  
-        gs->dynamicPos[11] = vec3(-10, 0, -10);
+        gs->dynamicPos[11] = vec3(-10, 0, -10);*/
 
-        for(int i =0;i<8;i++){
-            gs->speeds[i] = ZERO;
-        }
+
         }
         
     }
+            ImGui::SliderInt("solver Iterations", &(gs->solverIter), 1, 500);
+
    
 
 
@@ -477,10 +508,12 @@ void processInputs(GLFWwindow* window, windowParams* wp, gameState* gs, mousePar
 
 }
 
-float distConstraint(gameState* gs, int id1, int id2){
-    vec3 x1 = gs->dynamicPos[id1];
-    vec3 x2 = gs->dynamicPos[id2];
-    return distance(x1,x2) - 1;
+float distConstraint(gameState* gs, int id){
+    int i1 = gs->DCs[id].x;
+    int i2 = gs->DCs[id].y;
+    vec3 x1 = gs->dynamicPos[i1];
+    vec3 x2 = gs->dynamicPos[i2];
+    return distance(x1,x2) - gs->DClengths[id];
 }
 vec3 distConstraintGrad(gameState* gs, int id, int var){
     int i1 = gs->DCs[id].x;
@@ -506,13 +539,13 @@ void update(gameState* gs, windowParams* wp, camera* cam) {
     //XPBD
     float dt = SECOND_PER_UPDATE;
     float alphaTilde = gs->alpha/(dt*dt);
-    float* lambda = (float*)malloc(sizeof(float)*gs->DCcount);
+    float* lambda = new float[gs->DCcount]; //(float*)malloc(sizeof(float)*gs->DCcount);
     for(int j=0;j<gs->DCcount;j++){
         lambda[j] = 0;
     }
-    float* dLambda = (float*)malloc(sizeof(float)*gs->DCcount);
-    vec3* dx = (vec3*)malloc(sizeof(vec3)*gs->DCcount);
-    vec3* xprev = (vec3*)malloc(sizeof(vec3)*gs->pointMassCount);
+    float* dLambda = new float[gs->DCcount];//(float*)malloc(sizeof(float)*gs->DCcount);
+    vec3* dx = new vec3[gs->pointMassCount];//(vec3*)malloc(sizeof(vec3)*gs->pointMassCount);//DCcount ?
+    vec3* xprev = new vec3[gs->pointMassCount];// (vec3*)malloc(sizeof(vec3)*gs->pointMassCount);
 
     //predict
     for(int i=0;i<gs->pointMassCount;i++){
@@ -522,34 +555,36 @@ void update(gameState* gs, windowParams* wp, camera* cam) {
         
     }
     //solver
-    int solverIter = 10;
-    for(int k=0;k<solverIter;k++){
-
+    for(int k=0;k<gs->solverIter;k++){
         for(int j=0;j<gs->DCcount;j++){
-            dLambda[j] = (-distConstraint(gs,gs->DCs[j].x,gs->DCs[j].y)- alphaTilde*lambda[j]) /
+
+            dLambda[j] = (-distConstraint(gs,j)- alphaTilde*lambda[j]) /
             (2*pow(distance(distConstraintGrad(gs,j,gs->DCs[j].x),ZERO),2.) + alphaTilde);
             lambda[j] += dLambda[j];
-        }
-        for(int i=0;i<gs->pointMassCount;i++){
-            dx[i] = ZERO;
-            for(int j=0;j<gs->DCcount;j++){
-                dx[i]+= dLambda[j]*distConstraintGrad(gs,j, i);
+
+            for(int i=0;i<gs->pointMassCount;i++){
+                dx[i]= dLambda[j]*distConstraintGrad(gs,j, i);
+                gs->dynamicPos[i] += dx[i];
             }
-            gs->dynamicPos[i] += dx[i];
-            
         }
+    }
+    if(gs->rightClick){
+        gs->dynamicPos[0] = vec3(0.5 + gs->mousePos.x/1000, 1. + gs->mousePos.y/500, 0.5);
     }
     for(int i=0;i<gs->pointMassCount;i++){
-        if((gs->dynamicPos[i].y <= 0 && gs->dynamicPos[i].y <= xprev[i].y) || distance(gs->dynamicPos[i],ZERO) >= 10000 ){
-            gs->dynamicPos[i] = xprev[i];
+        if(gs->dynamicPos[i].y <= 0 ){
+            gs->dynamicPos[i].y = 0;
         }
+        
         gs->speeds[i] = (gs->dynamicPos[i] - xprev[i]) * (1/dt);
     }
+
+    
     
     free(lambda);
     free(xprev);
     free(dLambda);
-    free(dx);
+    free(dx);//*/
 }
 
 
@@ -629,24 +664,24 @@ int main() {
     initIMGUI(window);
 
     //----------------------------------------------------------------------------------------- MESH DATA
-    float vertices[] = {
+    float *vertices = new float[44]{
         //positions             texCoords
-         0.5f,  0.5f, 0.5f,     1.f,0.f,         // top right 
-         0.5f, -0.5f, 0.5f,     1.f,1.f,        // bottom right
-        -0.5f, -0.5f, 0.5f,     0.f,1.f,         // bottom left
-        -0.5f,  0.5f, 0.5f,     0.f,0.f,        // top left 
+         0.5f,  0.5f, 0.5f,     //1.f,0.f,         // top right 
+         0.5f, -0.5f, 0.5f,     //1.f,1.f,        // bottom right
+        -0.5f, -0.5f, 0.5f,     //0.f,1.f,         // bottom left
+        -0.5f,  0.5f, 0.5f,     //0.f,0.f,        // top left 
         //Back
-         0.5f,  0.5f, -0.5f,     1.,0.,        // top right
-         0.5f, -0.5f, -0.5f,     1.,1.,       // bottom right
-        -0.5f, -0.5f, -0.5f,     0.,1.,       // bottom left
-        -0.5f,  0.5f, -0.5f,      0.,0.,       // top left */
+         0.5f,  0.5f, -0.5f,     //1.,0.,        // top right
+         0.5f, -0.5f, -0.5f,     //1.,1.,       // bottom right
+        -0.5f, -0.5f, -0.5f,     //0.,1.,       // bottom left
+        -0.5f,  0.5f, -0.5f,      //0.,0.,       // top left */
         //floor
         10, 0, 10,    1, 1,
         10, 0, -10,   1, 0,
         -10, 0, 10,   0, 1,
         -10, 0, -10,  0, 0
     };
-    unsigned int indices[] = {  // cube faces
+    /*unsigned int indices[] = {  // cube faces
         0, 3, 1,    //front
         1, 3, 2,
         1, 2, 6,    //botom 
@@ -658,12 +693,12 @@ int main() {
         2, 3, 6,    //left
         7, 6, 3,
         0, 7, 3,    //top
-        0, 4, 7,//*/
+        0, 4, 7,//
         //floor
         8, 9, 10,
         9, 11, 10,
 
-    };
+    };*/
     float vertices2[] = {
         10, 0, 10,    1, 1,
         10, 0, -10,   1, 0,
@@ -694,9 +729,14 @@ int main() {
         glm::vec3(-10, 0, -10),
     };*/
     
-    int pointMassCount = 12;
-    
-    vec3 *dynamicPos = (vec3*)malloc(sizeof(vec3)*pointMassCount);
+
+    int pointMassCount = 0;
+    int indiceCount = 0;
+    int edgesCount = 0;
+    std::vector<ivec2> edges;
+    unsigned int* indices;
+    vec3 *dynamicPos;
+    vec3 *initialMesh;/*= (vec3*)malloc(sizeof(vec3)*pointMassCount);
         //positions            
         dynamicPos[0] = vec3(0.5f,  1.5f, 0.5f);             // top right 
         dynamicPos[1] = vec3( 0.5f, 0.5f, 0.5f);            // bottom right
@@ -711,9 +751,34 @@ int main() {
         dynamicPos[8] = vec3(10, 0, 10);   
         dynamicPos[9] = vec3(10, 0, -10);  
         dynamicPos[10] = vec3(-10, 0, 10);  
-        dynamicPos[11] = vec3(-10, 0, -10);
+        dynamicPos[11] = vec3(-10, 0, -10);*/
+    gameItem::countOBJ("icoSphere.obj",pointMassCount, indiceCount);
+    
+    vertices = new float[pointMassCount*5];
+    dynamicPos = new vec3[pointMassCount];
+    initialMesh = new vec3[pointMassCount];
+    indices = new unsigned int[indiceCount];
 
-    vec3 *speeds = (vec3*)malloc(sizeof(vec3)*pointMassCount);
+    gameItem::loadMeshFromObjFile("icoSphere.obj", dynamicPos,vertices, pointMassCount, indices, indiceCount,edges);
+    
+    
+
+    for(int i=0;i<pointMassCount;i++){
+            initialMesh[i] = dynamicPos[i];
+    }
+
+    /*for(int i=0;i<indiceCount;i++){
+        std::cout<< indices[i]<< " ";// std::endl;
+    }
+    for(int i=0;i<pointMassCount*5;i+=5){
+        std::cout<< vertices[i] << "  ";// std::endl;
+        std::cout<< vertices[i+1] << "  ";
+        std::cout<< vertices[i+2] << "  ";
+        std::cout<< vertices[i+3] << "  ";
+        std::cout<< vertices[i+4] <<std::endl;
+    }*/
+
+    vec3 *speeds = new vec3[pointMassCount];//(vec3*)malloc(sizeof(vec3)*pointMassCount);
     for(int i=0;i<pointMassCount;i++){
       speeds[i] = ZERO;
     }
@@ -724,15 +789,22 @@ int main() {
     glEnable(GL_DEPTH_TEST);
     glCullFace(GL_BACK);
 
-    gameItem cube("Cube", vertices, sizeof(vertices) / sizeof(float), indices, sizeof(indices) / sizeof(int), "Carre.png");
+    gameItem cube("Cube", vertices,pointMassCount, indices, indiceCount, "Carre.png");
     //gameItem floor("Floor", vertices2, sizeof(vertices2) / sizeof(float), indices2, sizeof(indices2) / sizeof(int), "damier.png");
     int gameItemCount = 1;
     gameItem gameItems[] = {cube };
-    float lambda[12] = {0,0,0,0,0,0,0,0,0,0,0,0};
-    ivec2 DCs[] = {ivec2(0,1), ivec2(1,2), ivec2(2,3), ivec2(3,0), ivec2(4,5), ivec2(5,6), ivec2(6,7), ivec2(7,4), ivec2(0,4), ivec2(1,5), ivec2(2,6), ivec2(3,7) };
-    int DCcount = 12;
+    ivec2 DCs[edges.size()] ;
+    std::copy(edges.begin(),edges.end(),DCs); /*{ivec2(0,1), ivec2(1,2), ivec2(2,3), ivec2(3,0), ivec2(4,5), ivec2(5,6), ivec2(6,7),//edges
+         ivec2(7,4), ivec2(0,4), ivec2(1,5), ivec2(2,6), ivec2(3,7),//edges
+         ivec2(0,6), ivec2(1,7), ivec2(2,4), ivec2(3,5) //diags
+        };*/
+    float DClengths[edges.size()]; // = {1,1,1,1,1,1,1,1,1,1,1,1, sqrt(3),sqrt(3),sqrt(3),sqrt(3)};
+    for(int i =0;i<edges.size();i++){
+        DClengths[i] = distance(dynamicPos[edges[i].x],dynamicPos[edges[i].y]);
+    }
+    int DCcount = edges.size();
 
-    gameState gs = gameState(gameItems, gameItemCount, dynamicPos, speeds, pointMassCount,  DCs, DCcount,lambda,  shaderProgram);
+    gameState gs = gameState(gameItems, gameItemCount, dynamicPos, initialMesh, speeds, pointMassCount,  DCs, DCcount,DClengths,  shaderProgram);
     mouseParams mp = mouseParams();
     windowParams wp = windowParams();
     camera cam = camera();
@@ -779,8 +851,11 @@ int main() {
         glDeleteBuffers(1, &(gs.gameItems[i].VBO));
         glDeleteVertexArrays(1, &(gs.gameItems[i].VAO));
     }
-    free(dynamicPos);
-    free(speeds);
+    delete initialMesh;
+    delete vertices;
+    delete (dynamicPos);
+    delete indices;
+    delete (speeds);
     glDeleteProgram(shaderProgram);
     glfwTerminate();
     return 0;
